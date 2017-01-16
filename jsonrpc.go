@@ -19,19 +19,26 @@ type Client interface {
 
 // Create new Client.
 func NewClient(addr string) Client {
-	dialer := &nett.Dialer{
-		Resolver:  &nett.CacheResolver{TTL: 5 * time.Minute},
-		Timeout:   1 * time.Minute,
-		KeepAlive: 1 * time.Minute,
+	return NewClientWithRoundTripper(addr, nil)
+}
+
+func NewClientWithRoundTripper(addr string, rt http.RoundTripper) Client {
+	if rt == nil {
+		dialer := &nett.Dialer{
+			Resolver:  &nett.CacheResolver{TTL: 5 * time.Minute},
+			Timeout:   1 * time.Minute,
+			KeepAlive: 1 * time.Minute,
+		}
+		rt = &http.Transport{
+			Dial:                dialer.Dial,
+			MaxIdleConnsPerHost: 512,
+		}
 	}
 	return &client{
 		addr: addr,
 		http: &http.Client{
-			Transport: &http.Transport{
-				Dial:                dialer.Dial,
-				MaxIdleConnsPerHost: 512,
-			},
-			Timeout: 10 * time.Minute,
+			Transport: rt,
+			Timeout:   10 * time.Minute,
 		},
 	}
 }
