@@ -2,40 +2,49 @@ package jsonrpc
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"time"
 
 	"github.com/abursavich/nett"
-	"github.com/gohttp/rpc/json"
+	rpcjson "github.com/gohttp/rpc/json"
 )
 
 // Client.
-type Client struct {
-	http *http.Client
-	addr string
+type Client interface {
+	Call(method string, args interface{}, res interface{}) error
 }
 
 // Create new Client.
-func NewClient(addr string) *Client {
+func NewClient(addr string) Client {
 	dialer := &nett.Dialer{
-		Resolver: &nett.CacheResolver{TTL: 5 * time.Minute},
-		Timeout:  1 * time.Minute,
+		Resolver:  &nett.CacheResolver{TTL: 5 * time.Minute},
+		Timeout:   1 * time.Minute,
+		KeepAlive: 1 * time.Minute,
 	}
-	return &Client{
+	return &client{
 		addr: addr,
 		http: &http.Client{
 			Transport: &http.Transport{
-				Dial: dialer.Dial,
+				Dial:                dialer.Dial,
+				MaxIdleConnsPerHost: 512,
 			},
 			Timeout: 10 * time.Minute,
 		},
 	}
 }
 
+type client struct {
+	http *http.Client
+	addr string
+}
+
 // Call RPC method with args.
-func (c *Client) Call(method string, args interface{}, res interface{}) error {
-	buf, err := json.EncodeClientRequest(method, args)
+func (c *client) Call(method string, args interface{}, res interface{}) error {
+	buf, err := rpcjson.EncodeClientRequest(method, args)
 	if err != nil {
 		return err
 	}
@@ -52,13 +61,24 @@ func (c *Client) Call(method string, args interface{}, res interface{}) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("received status code %d with status: %s", resp.StatusCode, resp.Status)
+		var e struct {
+			Error string `json:"error"`
+		}
+
+		if err = json.NewDecoder(resp.Body).Decode(&e); err != nil {
+			return fmt.Errorf("jsonrpc: received non json response, with status %d", resp.StatusCode)
+		}
+
+		return fmt.Errorf("jsonrpc: %s", e.Error)
 	}
 
-	err = json.DecodeClientResponse(resp.Body, res)
+	err = rpcjson.DecodeClientResponse(resp.Body, res)
 	if err != nil {
 		return err
 	}
